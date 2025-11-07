@@ -1,21 +1,23 @@
 {
   "name": "igames-library",
   "version": "1.0.0",
-  "description": "Biblioteca de jogos PSP",
+  "description": "Biblioteca de jogos PSP com login e comentários",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js",
-    "tailwind": "tailwindcss -i ./src/input.css -o ./public/css/style.css --watch"
+    "tailwind:dev": "tailwindcss -i ./src/input.css -o ./public/css/style.css --watch",
+    "tailwind:build": "tailwindcss -i ./src/input.css -o ./public/css/style.css --minify",
+    "build": "npm install && npm run tailwind:build"
   },
   "dependencies": {
     "axios": "^1.7.2",
     "connect-mongo": "^5.1.0",
     "cors": "^2.8.5",
-    "dotenv": "^17.2.3",
+    "dotenv": "^16.4.5",
     "express": "^4.19.2",
-    "express-session": "^1.18.2",
-    "mongoose": "^8.19.3",
+    "express-session": "^1.18.0",
+    "mongoose": "^8.4.4",
     "passport": "^0.7.0",
     "passport-google-oauth20": "^2.0.0"
   },
