@@ -23,7 +23,6 @@ if (!MONGO_URI) {
 mongoose.connect(MONGO_URI)
   .then(() => console.log('Conectado ao MongoDB Atlas'))
   .catch(err => {
-    // Apenas loga o erro, mas não trava o servidor
     console.error('Erro ao conectar ao MongoDB:', err.message);
   });
 
@@ -38,7 +37,7 @@ const User = mongoose.model('User', UserSchema);
 
 const CommentSchema = new mongoose.Schema({
   gameId: { type: Number, required: true, index: true },
-  userGoogleId: { type: String, required: true },
+  userGoogleId: { type: String, required: true }, // Precisamos disto para a autorização
   userName: String,
   userPhoto: String,
   text: String,
@@ -51,7 +50,6 @@ const Comment = mongoose.model('Comment', CommentSchema);
 app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
-
 app.use(session({
   secret: process.env.SESSION_SECRET || 'um_segredo_muito_forte_padrao',
   resave: false,
@@ -67,6 +65,7 @@ app.use(passport.session());
 passport.use(new GoogleStrategy({
     clientID: process.env.GOOGLE_CLIENT_ID,
     clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+    // URL de callback absoluta para corrigir o erro de mismatch no Render
     callbackURL: (process.env.BASE_URL || 'http://localhost:3000') + "/auth/google/callback"
   },
   async (accessToken, refreshToken, profile, done) => {
@@ -140,7 +139,7 @@ app.get('/api/me', (req, res) => {
 
 // --- Rotas da API de Jogos (SEM CACHE) ---
 
-// Rota 1: Listar todas as categorias (Chamada ao vivo)
+// Rota 1: Listar todas as categorias
 app.get('/api/categories', async (req, res) => {
   try {
     const response = await api.get('/categories/list');
@@ -150,14 +149,12 @@ app.get('/api/categories', async (req, res) => {
   }
 });
 
-// Rota 2: Listar todos os jogos (Chamada ao vivo + Paginação)
+// Rota 2: Listar todos os jogos (Paginação no servidor)
 app.get('/api/games', async (req, res) => {
   try {
-    // 1. Busca a lista COMPLETA da API
     const response = await api.post('/games/list', {});
     const allGames = response.data;
 
-    // 2. Pagina o resultado
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 24;
     const startIndex = (page - 1) * limit;
@@ -173,18 +170,16 @@ app.get('/api/games', async (req, res) => {
   }
 });
 
-// Rota 3: Listar jogos por categoria (Chamada ao vivo + Paginação)
+// Rota 3: Listar jogos por categoria (Paginação no servidor)
 app.get('/api/games/category/:id', async (req, res) => {
   try {
     const categoryId = parseInt(req.params.id, 10);
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 24;
     
-    // 1. Busca a lista da categoria
     const response = await api.post('/games-cat/list', { cat: categoryId });
     const games = response.data;
 
-    // 2. Pagina o resultado
     const startIndex = (page - 1) * limit;
     const endIndex = page * limit;
     const paginatedGames = games.slice(startIndex, endIndex);
@@ -204,11 +199,10 @@ app.get('/api/game/:id', async (req, res) => {
     const response = await api.post('/gameinfo/get', { userId: 0, gameId: gameId });
     const game = response.data;
 
-    // Lógica do Link Premium
     if (req.isAuthenticated()) {
-      game.download_url = game.premium_url; // Usuário logado: usa o link premium
+      game.download_url = game.premium_url;
     }
-    delete game.premium_url; // Remove o link premium da resposta
+    delete game.premium_url; 
     
     res.json(game);
   } catch (error) {
@@ -229,7 +223,7 @@ app.get('/api/game/:id/recommend', async (req, res) => {
   }
 });
 
-// Rota 6: Pesquisa (Chamada ao vivo + Paginação)
+// Rota 6: Pesquisa (Paginação no servidor)
 app.get('/api/search', async (req, res) => {
   try {
     const q = req.query.q ? req.query.q.toLowerCase() : '';
@@ -240,16 +234,13 @@ app.get('/api/search', async (req, res) => {
       return res.redirect(`/api/games?page=1&limit=${limit}`);
     }
 
-    // 1. Busca a lista COMPLETA
     const response = await api.post('/games/list', {});
     const allGames = response.data;
     
-    // 2. Filtra o resultado
     const filteredGames = allGames.filter(game =>
       game.title.toLowerCase().includes(q)
     );
 
-    // 3. Pagina o resultado
     const totalGames = filteredGames.length;
     const totalPages = Math.ceil(totalGames / limit);
     const startIndex = (page - 1) * limit;
@@ -305,6 +296,35 @@ app.post('/api/game/:id/comments', isLoggedIn, async (req, res) => {
   }
 });
 
+// 3. Deletar comentário (NOVO!)
+app.delete('/api/comments/:commentId', isLoggedIn, async (req, res) => {
+  try {
+    const { commentId } = req.params;
+    
+    // Encontra o comentário no banco de dados
+    const comment = await Comment.findById(commentId);
+
+    // 1. Se o comentário não existe
+    if (!comment) {
+      return res.status(404).json({ message: 'Comentário não encontrado.' });
+    }
+
+    // 2. Se o usuário logado NÃO for o dono do comentário
+    if (comment.userGoogleId !== req.user.googleId) {
+      return res.status(403).json({ message: 'Você não tem permissão para deletar este comentário.' });
+    }
+    
+    // 3. Se for o dono, delete o comentário
+    await Comment.findByIdAndDelete(commentId);
+    
+    res.status(200).json({ message: 'Comentário deletado com sucesso.' });
+
+  } catch (err) {
+    res.status(500).json({ message: 'Erro ao deletar comentário.' });
+  }
+});
+
+
 // --- Função do Filtro de Toxicidade ---
 async function checkToxicity(text) {
   const API_KEY = process.env.PERSPECTIVE_API_KEY;
@@ -339,5 +359,4 @@ app.get('*', (req, res) => {
 // --- Inicia o Servidor ---
 app.listen(PORT, () => {
   console.log(`Servidor rodando em http://localhost:${PORT}`);
-  // A função cacheData() foi removida daqui.
 });

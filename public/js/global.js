@@ -1,4 +1,6 @@
 // Este script é carregado em TODAS as páginas (index.html e game.html)
+let currentLoggedInUser = null; // (NOVO!) Variável global para guardar o usuário
+
 document.addEventListener('DOMContentLoaded', () => {
     checkLoginStatus();
 });
@@ -16,6 +18,7 @@ async function checkLoginStatus() {
 
         if (user) {
             // Usuário está LOGADO
+            currentLoggedInUser = user; // (NOVO!) Salva o usuário na variável global
             authContainer.innerHTML = `
                 <div class="flex items-center gap-3">
                     <span class="text-white hidden sm:block">${user.displayName}</span>
@@ -28,6 +31,7 @@ async function checkLoginStatus() {
             }
         } else {
             // Usuário está DESLOGADO
+            currentLoggedInUser = null; // (NOVO!) Garante que está nulo
             authContainer.innerHTML = `
                 <a href="/auth/google" class="bg-brand-green text-brand-blue font-bold py-2 px-4 rounded hover:bg-green-300 transition-colors">
                     Login com Google
@@ -39,7 +43,6 @@ async function checkLoginStatus() {
         }
     } catch (error) {
         console.error('Erro ao checar status de login:', error);
-        // Deixa o botão de login padrão em caso de erro
          const authContainer = document.getElementById('auth-status');
          authContainer.innerHTML = `<a href="/auth/google" class="bg-gray-500 text-white font-bold py-2 px-4 rounded">Erro de Login</a>`;
     }
