@@ -4,6 +4,7 @@ document.addEventListener('DOMContentLoaded', () => {
     loadCategories();
     loadData(1, true); // Carga inicial
     setupIntersectionObserver();
+    // A função checkLoginStatus() foi movida para global.js
 });
 
 // Elementos da DOM
@@ -24,7 +25,6 @@ let isLoading = false;            // Impede múltiplos carregamentos
 const gamesPerPage = 24;          // Deve ser o mesmo valor do 'limit' no server.js
 
 // --- Função de Debounce ---
-// (Evita spammar a API a cada tecla digitada)
 function debounce(func, delay = 300) {
     let timeout;
     return (...args) => {
@@ -38,65 +38,47 @@ function debounce(func, delay = 300) {
 // --- Configuração dos Listeners ---
 
 function setupSearchListener() {
-    // Impede o formulário de recarregar a página ao pressionar Enter
     searchForm.addEventListener('submit', (e) => e.preventDefault());
-
-    // Cria uma versão "debounced" da nossa função de carregar dados
-    const debouncedLoad = debounce((page, clear) => {
-        loadData(page, clear);
-    }, 300); // Espera 300ms após o usuário parar de digitar
+    const debouncedLoad = debounce((page, clear) => loadData(page, clear), 300);
 
     searchInput.addEventListener('input', () => {
-        // Atualiza o estado da página
         currentSearchTerm = searchInput.value;
         currentCategoryId = null; // A busca anula a seleção de categoria
         
-        // Ativa os botões de categoria para "não-selecionado"
-        document.querySelectorAll('#category-list button').forEach(btn => {
-            btn.className = 'bg-gray-700 hover:bg-gray-600 text-white font-bold py-2 px-4 rounded-full transition-colors';
-        });
+        // Coloca o botão "Todos" como ativo visualmente
+        const allButton = categoryList.querySelector('button'); // O primeiro botão é "Todos"
+        if (allButton) updateActiveButton(allButton);
         
-        // Chama a função debounced para carregar a página 1 (e limpar a grade)
         debouncedLoad(1, true);
     });
 }
 
-// Configura o "Scroll Infinito"
 function setupIntersectionObserver() {
-    const options = {
-        root: null,
-        rootMargin: '0px',
-        threshold: 0.25 // Aciona quando 25% do gatilho estiver visível
-    };
-
+    const options = { root: null, rootMargin: '0px', threshold: 0.25 };
     const callback = (entries) => {
         const target = entries[0];
-        // Se o gatilho está na tela, não estamos carregando, e ainda há páginas para carregar...
         if (target.isIntersecting && !isLoading && currentPage < totalPages) {
-            // Carrega a próxima página (sem limpar a grade)
             loadData(currentPage + 1, false);
         }
     };
-
     const observer = new IntersectionObserver(callback, options);
-    observer.observe(scrollTrigger); // Começa a "assistir" o gatilho
+    observer.observe(scrollTrigger);
 }
-
 
 // --- Funções de Carregamento de Dados ---
 
 function setLoading(loading) {
     isLoading = loading;
+    // O spinner principal é controlado por `shouldClearGrid`
+    // Este `setLoading` agora controla apenas o spinner de scroll infinito
     loadingSpinner.style.display = loading ? 'block' : 'none';
 }
 
-// Carrega os botões de categoria
 async function loadCategories() {
     try {
         const response = await fetch('/api/categories');
         const categories = await response.json();
         
-        // Botão "Todos"
         const allButton = document.createElement('button');
         allButton.className = 'bg-brand-green text-brand-blue font-bold py-2 px-4 rounded-full'; // Destaque inicial
         allButton.textContent = 'Todos';
@@ -105,11 +87,10 @@ async function loadCategories() {
             currentSearchTerm = "";
             searchInput.value = "";
             updateActiveButton(e.target);
-            loadData(1, true); // 'true' = limpar grade
+            loadData(1, true); 
         };
         categoryList.appendChild(allButton);
 
-        // Botões das outras categorias
         categories.forEach(cat => {
             const button = document.createElement('button');
             button.className = 'bg-gray-700 hover:bg-gray-600 text-white font-bold py-2 px-4 rounded-full transition-colors';
@@ -119,7 +100,7 @@ async function loadCategories() {
                 currentSearchTerm = "";
                 searchInput.value = "";
                 updateActiveButton(e.target);
-                loadData(1, true); // 'true' = limpar grade
+                loadData(1, true);
             };
             categoryList.appendChild(button);
         });
@@ -128,20 +109,21 @@ async function loadCategories() {
     }
 }
 
-/**
- * Função MESTRA: Carrega dados baseado no estado atual (Busca ou Categoria)
- * @param {number} page - O número da página para buscar
- * @param {boolean} [shouldClearGrid=false] - Se true, limpa a grade antes de adicionar
- */
 async function loadData(page, shouldClearGrid = false) {
-    if (isLoading) return; // Não faz nada se já estiver carregando
-    setLoading(true);
-
+    if (isLoading && !shouldClearGrid) return; // Se está carregando scroll infinito, não faz nada
+    
+    // Se for uma nova busca (limpar grid), permite o carregamento
+    isLoading = true; 
+    
     if (shouldClearGrid) {
         currentPage = 1;
         totalPages = 1;
-        gameGrid.innerHTML = '';
-        window.scrollTo(0, 0); // Rola a tela de volta para o topo
+        // Mostra um spinner de carregamento inicial
+        gameGrid.innerHTML = `<p class="text-white text-center col-span-full text-lg">Carregando jogos...</p>`;
+        window.scrollTo(0, 0); 
+    } else {
+        // Se for scroll infinito, mostra o spinner de baixo
+        loadingSpinner.style.display = 'block';
     }
     
     currentPage = page;
@@ -149,68 +131,64 @@ async function loadData(page, shouldClearGrid = false) {
 
     // Define qual API usar: busca, categoria ou todos
     if (currentSearchTerm) {
-        // Se há um termo de busca, usa a rota de pesquisa
         url = `/api/search?q=${encodeURIComponent(currentSearchTerm)}&page=${page}&limit=${gamesPerPage}`;
         gridTitle.textContent = `Resultados para: "${currentSearchTerm}"`;
     } else if (currentCategoryId) {
-        // Se há uma categoria ativa, usa a rota de categoria
         url = `/api/games/category/${currentCategoryId}?page=${page}&limit=${gamesPerPage}`;
-        // (Buscando o nome da categoria para o título - opcional)
         const btn = Array.from(categoryList.children).find(b => b.textContent !== 'Todos' && b.onclick.toString().includes(currentCategoryId));
         gridTitle.textContent = `Categoria: ${btn ? btn.textContent : '...'}`;
     } else {
-        // Senão, carrega "Todos os Jogos"
         url = `/api/games?page=${page}&limit=${gamesPerPage}`;
         gridTitle.textContent = 'Todos os Jogos';
     }
 
     try {
         const response = await fetch(url);
-        const data = await response.json(); // Espera um objeto { page, totalPages, games }
+        const data = await response.json(); 
         
-        renderGameGrid(data.games); // Adiciona os novos jogos
+        // Se limpamos a grade, o spinner ainda está lá. Limpe de novo.
+        if (shouldClearGrid) {
+            gameGrid.innerHTML = '';
+        }
+
+        renderGameGrid(data.games); 
         totalPages = data.totalPages;
         currentPage = data.page;
 
     } catch (error) {
         console.error('Erro ao carregar jogos:', error);
-        gameGrid.innerHTML = '<p class="text-red-400 text-center">Não foi possível carregar os jogos.</p>';
+        gameGrid.innerHTML = '<p class="text-red-400 text-center col-span-full">Não foi possível carregar os jogos.</p>';
     } finally {
-        setLoading(false);
+        isLoading = false;
+        loadingSpinner.style.display = 'none'; // Esconde o spinner de scroll infinito
     }
 }
 
 // --- Funções de Renderização ---
 
-// Atualiza o estilo do botão de categoria ativo
 function updateActiveButton(activeButton) {
-    // Reseta todos os botões
     document.querySelectorAll('#category-list button').forEach(btn => {
         btn.className = 'bg-gray-700 hover:bg-gray-600 text-white font-bold py-2 px-4 rounded-full transition-colors';
     });
-    // Ativa o botão clicado
     activeButton.className = 'bg-brand-green text-brand-blue font-bold py-2 px-4 rounded-full';
 }
 
-// Renderiza a grade de jogos (APENAS ADICIONA, NÃO LIMPA)
 function renderGameGrid(games) {
     if (games.length === 0 && currentPage === 1) {
-        gameGrid.innerHTML = '<p class="text-gray-400 text-center">Nenhum jogo encontrado para esta busca.</p>';
+        gameGrid.innerHTML = '<p class="text-gray-400 text-center col-span-full">Nenhum jogo encontrado.</p>';
         return;
     }
     
-    // Adiciona os novos jogos à grade existente
     games.forEach(game => {
         const gameCard = createGameCard(game);
         gameGrid.appendChild(gameCard);
     });
 }
 
-// Cria o HTML para um card de jogo
 function createGameCard(game) {
     const card = document.createElement('a');
     card.href = `/game.html?id=${game.id}`; 
-    card.className = 'game-card'; // Classe definida em input.css
+    card.className = 'game-card';
     
     card.innerHTML = `
         <img src="${game.cover}" alt="${game.title}" loading="lazy" class="w-full h-auto object-cover aspect-[3/4]">
