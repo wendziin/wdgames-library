@@ -15,14 +15,19 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 // --- Conexão com Banco de Dados ---
-// CRIE UM ARQUIVO .env na raiz do projeto e adicione seu MONGO_URI
 const MONGO_URI = process.env.MONGO_URI; 
+if (!MONGO_URI) {
+  console.error("ERRO: A variável de ambiente MONGO_URI não está definida.");
+  process.exit(1);
+}
 mongoose.connect(MONGO_URI)
   .then(() => console.log('Conectado ao MongoDB Atlas'))
-  .catch(err => console.error('Erro ao conectar ao MongoDB:', err));
+  .catch(err => {
+    // Apenas loga o erro, mas não trava o servidor
+    console.error('Erro ao conectar ao MongoDB:', err.message);
+  });
 
 // --- Modelos do Banco de Dados (Schemas) ---
-// Usuário (para salvar quem logou com Google)
 const UserSchema = new mongoose.Schema({
   googleId: { type: String, required: true, unique: true },
   displayName: String,
@@ -31,15 +36,14 @@ const UserSchema = new mongoose.Schema({
 });
 const User = mongoose.model('User', UserSchema);
 
-// Comentário
 const CommentSchema = new mongoose.Schema({
-  gameId: { type: Number, required: true, index: true }, // Index para buscas rápidas
+  gameId: { type: Number, required: true, index: true },
   userGoogleId: { type: String, required: true },
   userName: String,
   userPhoto: String,
   text: String,
   timestamp: { type: Date, default: Date.now },
-  isApproved: { type: Boolean, default: true } // Para moderação futura
+  isApproved: { type: Boolean, default: true }
 });
 const Comment = mongoose.model('Comment', CommentSchema);
 
@@ -48,38 +52,29 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Configuração de SESSÃO
-// (Precisa vir ANTES do passport)
 app.use(session({
-  secret: process.env.SESSION_SECRET || 'um_segredo_muito_forte', // CRIE UM SESSION_SECRET no seu .env
+  secret: process.env.SESSION_SECRET || 'um_segredo_muito_forte_padrao',
   resave: false,
   saveUninitialized: false,
-  store: MongoStore.create({ mongoUrl: MONGO_URI }), // Salva a sessão no MongoDB
-  cookie: {
-    maxAge: 1000 * 60 * 60 * 24 * 7 // 7 dias
-  }
+  store: MongoStore.create({ mongoUrl: MONGO_URI }),
+  cookie: { maxAge: 1000 * 60 * 60 * 24 * 7 } // 7 dias
 }));
 
-// Configuração do PASSPORT (Autenticação)
+// --- Configuração do PASSPORT (Autenticação) ---
 app.use(passport.initialize());
 app.use(passport.session());
 
-// CRIE GOOGLE_CLIENT_ID e GOOGLE_CLIENT_SECRET no Google Cloud Console
-// e adicione-os ao seu .env
 passport.use(new GoogleStrategy({
     clientID: process.env.GOOGLE_CLIENT_ID,
     clientSecret: process.env.GOOGLE_CLIENT_SECRET,
     callbackURL: "/auth/google/callback" // Esta é a URL de callback
   },
   async (accessToken, refreshToken, profile, done) => {
-    // Isso é chamado quando o Google retorna o perfil do usuário
     try {
       let user = await User.findOne({ googleId: profile.id });
       if (user) {
-        // Usuário já existe
         return done(null, user);
       } else {
-        // Criar novo usuário
         const newUser = new User({
           googleId: profile.id,
           displayName: profile.displayName,
@@ -95,12 +90,10 @@ passport.use(new GoogleStrategy({
   }
 ));
 
-// Salva o usuário na sessão
 passport.serializeUser((user, done) => {
-  done(null, user.id); // Salva o ID do MongoDB na sessão
+  done(null, user.id);
 });
 
-// Carrega o usuário da sessão
 passport.deserializeUser(async (id, done) => {
   try {
     const user = await User.findById(id);
@@ -118,87 +111,104 @@ function isLoggedIn(req, res, next) {
   res.status(401).json({ message: 'Você precisa estar logado para fazer isso.' });
 }
 
-// --- Cache da API iGames (como antes) ---
-let allGamesCache = [];
-let categoriesCache = [];
-const api = axios.create({ /* ... (configuração do axios igual a antes) ... */ });
+// --- Instância da API iGames ---
+const api = axios.create({
+  baseURL: 'https://api.igamesbr.com',
+  headers: {
+    'User-Agent': 'okhttp/4.10.0',
+    'Accept': 'application/json, text/plain, */*',
+    'Accept-Encoding': 'gzip'
+  }
+});
 
-async function cacheData() { /* ... (função de cache igual a antes) ... */ }
-
-// --- Rotas de Autenticação (NOVAS!) ---
-
-// 1. Inicia o login com Google
-app.get('/auth/google',
-  passport.authenticate('google', { scope: ['profile', 'email'] }) // Pede perfil e email
-);
-
-// 2. Callback do Google (para onde o Google redireciona)
+// --- Rotas de Autenticação ---
+app.get('/auth/google', passport.authenticate('google', { scope: ['profile', 'email'] }));
 app.get('/auth/google/callback', 
   passport.authenticate('google', { failureRedirect: '/' }),
-  (req, res) => {
-    // Sucesso! Redireciona de volta para a home.
-    res.redirect('/');
-  }
+  (req, res) => { res.redirect('/'); }
 );
-
-// 3. Rota de Logout
 app.get('/auth/logout', (req, res, next) => {
   req.logout((err) => {
     if (err) { return next(err); }
     res.redirect('/');
   });
 });
-
-// 4. Rota para o Frontend saber quem está logado
 app.get('/api/me', (req, res) => {
-  if (req.isAuthenticated()) {
-    // Se logado, envia os dados do usuário
-    res.json(req.user);
-  } else {
-    // Se não logado, envia null
-    res.json(null);
+  res.json(req.isAuthenticated() ? req.user : null);
+});
+
+
+// --- Rotas da API de Jogos (SEM CACHE) ---
+
+// Rota 1: Listar todas as categorias (Chamada ao vivo)
+app.get('/api/categories', async (req, res) => {
+  try {
+    const response = await api.get('/categories/list');
+    res.json(response.data);
+  } catch (error) {
+    res.status(500).json({ message: 'Erro ao buscar categorias' });
   }
 });
 
+// Rota 2: Listar todos os jogos (Chamada ao vivo + Paginação)
+app.get('/api/games', async (req, res) => {
+  try {
+    // 1. Busca a lista COMPLETA da API
+    const response = await api.post('/games/list', {});
+    const allGames = response.data;
 
-// --- Rotas da API (ATUALIZADAS) ---
+    // 2. Pagina o resultado
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 24;
+    const startIndex = (page - 1) * limit;
+    const endIndex = page * limit;
 
-// Rotas /api/categories, /api/games, /api/games/category/:id, /api/search
-// (Cole suas rotas de paginação e busca aqui, elas funcionam como estão)
+    const paginatedGames = allGames.slice(startIndex, endIndex);
+    const totalGames = allGames.length;
+    const totalPages = Math.ceil(totalGames / limit);
 
-// ... (cole as rotas 1, 2, 3, 6 daqui) ...
-// Exemplo (Rota 2):
-app.get('/api/games', (req, res) => {
-  const page = parseInt(req.query.page) || 1;
-  const limit = parseInt(req.query.limit) || 24; 
-  const startIndex = (page - 1) * limit;
-  const endIndex = page * limit;
-  const paginatedGames = allGamesCache.slice(startIndex, endIndex);
-  const totalGames = allGamesCache.length;
-  const totalPages = Math.ceil(totalGames / limit);
-  res.json({
-    page: page,
-    totalPages: totalPages,
-    totalGames: totalGames,
-    games: paginatedGames
-  });
+    res.json({ page, totalPages, totalGames, games: paginatedGames });
+  } catch (error) {
+    res.status(500).json({ message: 'Erro ao buscar todos os jogos' });
+  }
 });
 
-// Rota 4: Obter detalhes do jogo (ATUALIZADA PARA LINK PREMIUM!)
+// Rota 3: Listar jogos por categoria (Chamada ao vivo + Paginação)
+app.get('/api/games/category/:id', async (req, res) => {
+  try {
+    const categoryId = parseInt(req.params.id, 10);
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 24;
+    
+    // 1. Busca a lista da categoria
+    const response = await api.post('/games-cat/list', { cat: categoryId });
+    const games = response.data;
+
+    // 2. Pagina o resultado
+    const startIndex = (page - 1) * limit;
+    const endIndex = page * limit;
+    const paginatedGames = games.slice(startIndex, endIndex);
+    const totalGames = games.length;
+    const totalPages = Math.ceil(totalGames / limit);
+
+    res.json({ page, totalPages, totalGames, games: paginatedGames });
+  } catch (error) {
+    res.status(500).json({ message: 'Erro ao buscar jogos da categoria' });
+  }
+});
+
+// Rota 4: Detalhes do jogo (com lógica de link premium)
 app.get('/api/game/:id', async (req, res) => {
   try {
     const gameId = parseInt(req.params.id, 10);
     const response = await api.post('/gameinfo/get', { userId: 0, gameId: gameId });
     const game = response.data;
 
-    // AQUI ESTÁ A MÁGICA DO LOGIN:
+    // Lógica do Link Premium
     if (req.isAuthenticated()) {
-      // Se o usuário está LOGADO, troque o link de download pelo premium
-      game.download_url = game.premium_url;
+      game.download_url = game.premium_url; // Usuário logado: usa o link premium
     }
-    
-    // Remove o link premium da resposta para não confundir o frontend
-    delete game.premium_url; 
+    delete game.premium_url; // Remove o link premium da resposta
     
     res.json(game);
   } catch (error) {
@@ -206,36 +216,75 @@ app.get('/api/game/:id', async (req, res) => {
   }
 });
 
-// Rota 5: Recomendações (igual a antes)
-// ... (cole sua rota 5 aqui) ...
+// Rota 5: Recomendações
+app.get('/api/game/:id/recommend', async (req, res) => {
+  try {
+    const gameId = parseInt(req.params.id, 10);
+    const gameInfoResponse = await api.post('/gameinfo/get', { userId: 0, gameId: gameId });
+    const gameTitle = gameInfoResponse.data.title;
+    const recommendResponse = await api.post('/games/recommend', { game: gameId, title: gameTitle });
+    res.json(recommendResponse.data);
+  } catch (error) {
+    res.status(500).json({ message: 'Erro ao buscar recomendações', details: error.message });
+  }
+});
 
+// Rota 6: Pesquisa (Chamada ao vivo + Paginação)
+app.get('/api/search', async (req, res) => {
+  try {
+    const q = req.query.q ? req.query.q.toLowerCase() : '';
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 24;
 
-// --- Rotas de Comentários (NOVAS!) ---
+    if (!q) {
+      return res.redirect(`/api/games?page=1&limit=${limit}`);
+    }
 
-// 1. Obter comentários de um jogo
+    // 1. Busca a lista COMPLETA
+    const response = await api.post('/games/list', {});
+    const allGames = response.data;
+    
+    // 2. Filtra o resultado
+    const filteredGames = allGames.filter(game =>
+      game.title.toLowerCase().includes(q)
+    );
+
+    // 3. Pagina o resultado
+    const totalGames = filteredGames.length;
+    const totalPages = Math.ceil(totalGames / limit);
+    const startIndex = (page - 1) * limit;
+    const endIndex = page * limit;
+    const paginatedGames = filteredGames.slice(startIndex, endIndex);
+
+    res.json({ page, totalPages, totalGames, games: paginatedGames });
+  } catch (error) {
+    res.status(500).json({ message: 'Erro ao processar busca' });
+  }
+});
+
+// --- Rotas de Comentários ---
+
+// 1. Obter comentários
 app.get('/api/game/:id/comments', async (req, res) => {
   try {
     const gameId = parseInt(req.params.id, 10);
     const comments = await Comment.find({ gameId: gameId, isApproved: true })
-                                  .sort({ timestamp: -1 }); // Mais novos primeiro
+                                  .sort({ timestamp: -1 });
     res.json(comments);
   } catch (err) {
     res.status(500).json({ message: 'Erro ao buscar comentários' });
   }
 });
 
-// 2. Postar um novo comentário (requer login!)
+// 2. Postar comentário
 app.post('/api/game/:id/comments', isLoggedIn, async (req, res) => {
   try {
     const gameId = parseInt(req.params.id, 10);
     const { text } = req.body;
-
     if (!text || text.trim().length < 3) {
       return res.status(400).json({ message: 'Comentário muito curto.' });
     }
 
-    // --- FILTRO DE TOXICIDADE (PERSPECTIVE API) ---
-    // (Este é o Passo 3, veja abaixo como obter a chave)
     const isToxic = await checkToxicity(text);
     if (isToxic) {
       return res.status(400).json({ message: 'Seu comentário foi bloqueado por conter linguagem ofensiva.' });
@@ -247,54 +296,48 @@ app.post('/api/game/:id/comments', isLoggedIn, async (req, res) => {
       userName: req.user.displayName,
       userPhoto: req.user.photo,
       text: text,
-      isApproved: true // Aprovamos por padrão, já que filtramos
+      isApproved: true
     });
-
     await newComment.save();
     res.status(201).json(newComment);
-
   } catch (err) {
     res.status(500).json({ message: 'Erro ao postar comentário' });
   }
 });
 
-
-// --- Função do Filtro de Toxicidade (NOVO!) ---
+// --- Função do Filtro de Toxicidade ---
 async function checkToxicity(text) {
-  const API_KEY = process.env.PERSPECTIVE_API_KEY; // Adicione ao .env
+  const API_KEY = process.env.PERSPECTIVE_API_KEY;
   if (!API_KEY) {
     console.warn("PERSPECTIVE_API_KEY não definida. Pulando filtro de toxicidade.");
-    return false; // Se a chave não existe, aprova tudo
+    return false;
   }
-
   const url = `https://commentanalyzer.googleapis.com/v1alpha1/comments:analyze?key=${API_KEY}`;
-  
   try {
     const response = await axios.post(url, {
       comment: { text: text },
-      languages: ["pt", "en"], // Analisa em Português e Inglês
+      languages: ["pt", "en"],
       requestedAttributes: { TOXICITY: {} }
     });
-
     const toxicityScore = response.data.attributeScores.TOXICITY.summaryScore.value;
     console.log(`Pontuação de Toxicidade: ${toxicityScore}`);
-
-    // Nosso limite: 70% de chance de ser tóxico
-    return toxicityScore > 0.7; 
-
+    return toxicityScore > 0.7; // Limite de 70%
   } catch (error) {
     console.error("Erro ao chamar a Perspective API:", error.message);
-    return false; // Em caso de erro na API, aprova o comentário
+    return false; // Em caso de erro, aprova
   }
 }
 
+// --- Rotas do Frontend ---
+app.get('/game', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'game.html'));
+});
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
 
-// --- Rotas do Frontend (igual a antes) ---
-app.get('/game', (req, res) => { /* ... */ });
-app.get('*', (req, res) => { /* ... */ });
-
-// --- Inicia o Servidor e o Cache ---
+// --- Inicia o Servidor ---
 app.listen(PORT, () => {
   console.log(`Servidor rodando em http://localhost:${PORT}`);
-  cacheData();
+  // A função cacheData() foi removida daqui.
 });
