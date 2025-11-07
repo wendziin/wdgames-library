@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>WDGames - Biblioteca PSP</title>
+    <link href="/css/style.css" rel="stylesheet">
+    
+    <script>
+      document.addEventListener('touchstart', (event) => {
+        if (event.touches.length > 1) {
+          event.preventDefault();
+        }
+      }, { passive: false });
+    </script>
+</head>
+<body class="bg-brand-blue">
+
+    <header class="bg-gray-900 shadow-lg">
+        <div class="container mx-auto px-4 py-6 flex flex-col sm:flex-row justify-between items-center gap-4">
+            <div>
+                <h1 class="text-3xl font-bold text-brand-green">WDGames PSP Library</h1>
+                <p class="text-gray-400">Sua coleção de jogos de PSP</p>
+            </div>
+            <div id="auth-status" class="flex-shrink-0">
+                <a href="/auth/google" class="bg-brand-green text-brand-blue font-bold py-2 px-4 rounded">
+                    Carregando...
+                </a>
+            </div>
+        </div>
+    </header>
+
+    <nav class="container mx-auto px-4 py-4">
+        
+        <form id="search-form" class="mb-6">
+            <input type="search" id="search-input" placeholder="Buscar por nome do jogo..." 
+                   class="w-full p-3 rounded-lg bg-gray-700 text-white border border-gray-600 
+                          focus:outline-none focus:ring-2 focus:ring-brand-green focus:border-transparent"
+                   autocomplete="off">
+        </form>
+
+        <h2 class="text-xl font-semibold text-white mb-3">Categorias</h2>
+        <div id="category-list" class="flex gap-2 overflow-x-auto whitespace-nowrap py-2">
+            </div>
+    </nav>
+
+    <main class="container mx-auto px-4 py-6">
+        <h2 id="grid-title" class="text-2xl font-semibold text-white mb-4">Todos os Jogos</h2>
+        
+        <div id="game-grid" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
+            </div>
+
+        <div id="infinite-scroll-trigger" class="h-20"></div>
+
+        <div id="loading-spinner" class="text-center text-white text-xl my-8" style="display: none;">
+            Carregando mais jogos...
+        </div>
+    </main>
+
+    <script src="/js/global.js"></script> <script src="/js/main.js"></script>
+</body>
+</html>
