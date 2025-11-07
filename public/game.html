@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Detalhes do Jogo</title>
+    <link href="/css/style.css" rel="stylesheet">
+    
+    <script>
+      document.addEventListener('touchstart', (event) => {
+        if (event.touches.length > 1) {
+          event.preventDefault();
+        }
+      }, { passive: false });
+    </script>
+</head>
+<body class="bg-brand-blue">
+
+    <header class="bg-gray-900 shadow-lg">
+        <div class="container mx-auto px-4 py-6 flex flex-col sm:flex-row justify-between items-center gap-4">
+            <div>
+                <a href="/" class="text-3xl font-bold text-brand-green hover:text-green-300">WDGames PSP Library</a>
+            </div>
+            <div id="auth-status" class="flex-shrink-0">
+                <a href="/auth/google" class="bg-brand-green text-brand-blue font-bold py-2 px-4 rounded">
+                    Carregando...
+                </a>
+            </div>
+        </div>
+    </header>
+
+    <main class="container mx-auto p-4">
+        <div id="loading-spinner-page" class="text-center text-white text-xl mt-10">
+            Carregando detalhes do jogo...
+        </div>
+        
+        <div id="game-details" class="text-white"></div>
+        
+        <section id="recommendations-section" class="mt-12" style="display: none;">
+            <h2 class="text-2xl font-semibold text-white mb-4">Jogos Recomendados</h2>
+            <div id="recommendations-grid" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
+                </div>
+        </section>
+
+        <section id="comments-section" class="mt-12" style="display: none;">
+            <h2 class="text-2xl font-semibold text-white mb-4 border-b border-gray-700 pb-2">Comentários</h2>
+            
+            <form id="comment-form" class="mb-6" style="display: none;">
+                <textarea id="comment-text" class="w-full p-3 rounded-lg bg-gray-700 text-white border border-gray-600" rows="3" placeholder="Deixe seu comentário..."></textarea>
+                <div id="comment-error" class="text-red-400 text-sm mt-2"></div>
+                <button type="submit" class="bg-brand-green text-brand-blue font-bold py-2 px-4 rounded mt-2">
+                    Postar Comentário
+                </button>
+            </form>
+            
+            <div id="comments-list" class="space-y-4">
+                </div>
+        </section>
+    </main>
+
+    <script src="/js/global.js"></script> <script src="/js/game.js"></script>
+</body>
+</html>
