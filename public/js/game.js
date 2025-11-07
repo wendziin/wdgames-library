@@ -16,19 +16,23 @@ document.addEventListener('DOMContentLoaded', () => {
         loadRecommendations(currentGameId);
         loadComments(currentGameId); // Carrega os comentários
         
-        // Adiciona listener ao formulário de comentário
+        // Adiciona listener ao formulário de postar
         const commentForm = document.getElementById('comment-form');
         commentForm.addEventListener('submit', (e) => {
             e.preventDefault();
             postComment(currentGameId);
         });
+
+        // (NOVO!) Adiciona listener para cliques nos botões de deletar
+        const commentsList = document.getElementById('comments-list');
+        commentsList.addEventListener('click', handleDeleteClick);
+
     } else {
         gameDetailsContainer.innerHTML = '<p class="text-red-400 text-center">ID do jogo não encontrado.</p>';
         setPageLoading(false);
     }
     
     // A função checkLoginStatus() do global.js já está rodando
-    // e vai mostrar/esconder o #comment-form quando terminar
 });
 
 function setPageLoading(isLoading) {
@@ -47,7 +51,6 @@ function setPageLoading(isLoading) {
 async function loadGameDetails(id) {
     setPageLoading(true);
     try {
-        // A rota /api/game/:id já tem a lógica de link premium/normal
         const response = await fetch(`/api/game/${id}`);
         if (!response.ok) throw new Error('Falha ao buscar detalhes');
         const game = await response.json();
@@ -65,7 +68,8 @@ async function loadGameDetails(id) {
 
 function renderGameDetails(game) {
     // O link de download aqui já é o correto (premium ou normal)
-    // A lógica foi feita no server.js
+    const isPremium = game.download_url.includes('premium');
+    
     gameDetailsContainer.innerHTML = `
         <div class="flex flex-col md:flex-row gap-6">
             <div class="md:w-1/3 lg:w-1/4">
@@ -74,8 +78,8 @@ function renderGameDetails(game) {
                    class="block w-full bg-brand-green text-brand-blue text-center font-bold py-3 px-4 rounded-lg mt-4 hover:bg-green-300 transition-colors">
                    Baixar Jogo (${game.size})
                 </a>
-                <span class="text-xs text-center block mt-2 text-gray-400">
-                    ${game.download_url.includes('premium') ? 'Download Premium Ativado!' : 'Faça login para download premium.'}
+                <span class="text-xs text-center block mt-2 ${isPremium ? 'text-green-400' : 'text-gray-400'}">
+                    ${isPremium ? 'Download Premium Ativado!' : 'Faça login para download premium.'}
                 </span>
             </div>
 
@@ -93,7 +97,6 @@ function renderGameDetails(game) {
                 <p class="text-gray-300 whitespace-pre-line leading-relaxed">${game.description}</p>
                 
                 <h2 class="text-2xl font-semibold text-white mt-8 mb-2 border-b border-gray-700 pb-2">Galeria</h2>
-                
                 <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
                     ${game.prints.map(printUrl => `
                         <a href="${printUrl}" target="_blank">
@@ -142,7 +145,7 @@ function createRecGameCard(game) { // Card de Recomendação
     return card;
 }
 
-// --- Lógica de Comentários ---
+// --- Lógica de Comentários (ATUALIZADA) ---
 
 async function loadComments(gameId) {
     const list = document.getElementById('comments-list');
@@ -158,13 +161,28 @@ async function loadComments(gameId) {
 
         list.innerHTML = ''; // Limpa
         comments.forEach(comment => {
+            // (NOVO!) Verifica se o usuário logado é o dono do comentário
+            let deleteButtonHtml = '';
+            if (currentLoggedInUser && currentLoggedInUser.googleId === comment.userGoogleId) {
+                deleteButtonHtml = `
+                    <button class="text-red-500 hover:text-red-400 text-xs font-bold delete-comment-btn" 
+                            data-comment-id="${comment._id}">
+                        Deletar
+                    </button>
+                `;
+            }
+
             const commentEl = document.createElement('div');
             commentEl.className = 'flex items-start gap-3 bg-gray-800 p-4 rounded-lg';
             commentEl.innerHTML = `
                 <img src="${comment.userPhoto}" alt="${comment.userName}" class="w-10 h-10 rounded-full">
-                <div>
-                    <strong class="text-white">${comment.userName}</strong>
-                    <span class="text-gray-400 text-sm ml-2">${new Date(comment.timestamp).toLocaleString('pt-BR')}</span>
+                <div class="w-full">
+                    <div class="flex justify-between items-center">
+                        <div>
+                            <strong class="text-white">${comment.userName}</strong>
+                            <span class="text-gray-400 text-sm ml-2">${new Date(comment.timestamp).toLocaleString('pt-BR')}</span>
+                        </div>
+                        ${deleteButtonHtml} </div>
                     <p class="text-gray-300 mt-1">${comment.text}</p>
                 </div>
             `;
@@ -193,19 +211,51 @@ async function postComment(gameId) {
         });
 
         const result = await response.json();
-
         if (!response.ok) {
-            // Mostra erro (ex: "comentário tóxico" ou "muito curto")
             errorDiv.textContent = result.message;
         } else {
-            // Sucesso!
-            textarea.value = ''; // Limpa o campo
-            loadComments(gameId); // Recarrega a lista de comentários
+            textarea.value = '';
+            errorDiv.textContent = '';
+            loadComments(gameId); // Recarrega a lista
         }
     } catch (error) {
         errorDiv.textContent = 'Erro de conexão. Tente novamente.';
     } finally {
         submitButton.disabled = false;
         submitButton.textContent = 'Postar Comentário';
+    }
+}
+
+// (NOVO!) Função para lidar com o clique no botão de deletar
+function handleDeleteClick(event) {
+    // Verifica se o clique foi em um botão de deletar (usando event delegation)
+    if (event.target.classList.contains('delete-comment-btn')) {
+        const commentId = event.target.dataset.commentId;
+        deleteComment(commentId);
+    }
+}
+
+// (NOVO!) Função para enviar o pedido de 'DELETE'
+async function deleteComment(commentId) {
+    if (!confirm('Tem certeza que deseja deletar este comentário? Esta ação é permanente.')) {
+        return;
+    }
+
+    try {
+        const response = await fetch(`/api/comments/${commentId}`, {
+            method: 'DELETE'
+        });
+
+        if (!response.ok) {
+            const err = await response.json();
+            throw new Error(err.message || 'Falha ao deletar');
+        }
+
+        // Sucesso! Recarrega a lista de comentários
+        loadComments(currentGameId);
+
+    } catch (error) {
+        console.error('Erro ao deletar comentário:', error);
+        alert(`Erro: ${error.message}`);
     }
 }
