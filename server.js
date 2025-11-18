@@ -16,11 +16,11 @@ const PORT = process.env.PORT || 3000;
 // --- Conexão com Banco de Dados ---
 const MONGO_URI = process.env.MONGO_URI; 
 if (!MONGO_URI) {
-  console.error("ERRO: MONGO_URI não definido.");
+  console.error("ERRO: MONGO_URI não definido no .env");
 } else {
   mongoose.connect(MONGO_URI)
-    .then(() => console.log('Conectado ao MongoDB Atlas'))
-    .catch(err => console.error('Erro MongoDB:', err.message));
+    .then(() => console.log('✅ Conectado ao MongoDB Atlas'))
+    .catch(err => console.error('❌ Erro MongoDB:', err.message));
 }
 
 // --- Schemas ---
@@ -56,16 +56,6 @@ app.use(session({
 }));
 app.use(passport.initialize());
 app.use(passport.session());
-
-// ... (logo após app.use(passport.session()); )
-
-// --- Rota de Health Check (Para o Better Stack) ---
-app.get('/ping', (req, res) => {
-  res.status(200).send('Pong');
-});
-
-// ... (resto do código)
-
 
 // --- Passport Config ---
 if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
@@ -104,18 +94,20 @@ function isLoggedIn(req, res, next) {
   res.status(401).json({ message: 'Login necessário.' });
 }
 
-// --- API Externa ---
+// --- API Externa (CONFIGURAÇÃO EXATA DO SEU TESTE) ---
 const api = axios.create({
   baseURL: 'https://api.igamesbr.com',
   headers: {
     'User-Agent': 'okhttp/4.10.0',
     'Accept': 'application/json, text/plain, */*',
-    'Accept-Encoding': 'gzip'
+    'Accept-Encoding': 'gzip',
+    'Content-Type': 'application/json' // ADICIONADO: Igual ao seu teste
   },
-  timeout: 10000 // 10 segundos de timeout para não travar o servidor
+  timeout: 10000
 });
 
-// --- SISTEMA DE CACHE INTELIGENTE (A Correção) ---
+// --- SISTEMA DE CACHE INTELIGENTE (LAZY CACHE) ---
+// Isso evita chamar a API externa toda hora e ser bloqueado
 let memoryCache = {
     games: null,
     categories: null,
@@ -123,35 +115,39 @@ let memoryCache = {
 };
 const CACHE_DURATION = 1000 * 60 * 60; // 1 hora
 
-// Função auxiliar para pegar dados (do cache ou da API)
 async function getCachedData() {
     const now = Date.now();
     
-    // Se o cache existe e tem menos de 1 hora, usa ele
+    // Se o cache é válido, usa ele
     if (memoryCache.games && (now - memoryCache.lastUpdated < CACHE_DURATION)) {
+        console.log("⚡ Usando cache da memória (Rápido)");
         return { games: memoryCache.games, categories: memoryCache.categories };
     }
 
-    console.log("Cache expirado ou vazio. Buscando novos dados na API iGamesBR...");
+    console.log("🔄 Cache expirado ou vazio. Buscando na API externa...");
     
     try {
-        // Busca dados em paralelo
+        // Busca dados (exatamente como o seu script de teste)
         const [gamesRes, catRes] = await Promise.all([
             api.post('/games/list', {}),
             api.get('/categories/list')
         ]);
 
+        console.log(`✅ Sucesso! Jogos baixados: ${gamesRes.data.length}`);
+
         memoryCache.games = gamesRes.data;
         memoryCache.categories = catRes.data;
         memoryCache.lastUpdated = now;
         
-        console.log("Cache atualizado com sucesso.");
         return { games: memoryCache.games, categories: memoryCache.categories };
     } catch (error) {
-        console.error("Erro ao atualizar cache:", error.message);
-        // Se falhar, tenta retornar o cache antigo se existir
+        console.error("❌ Erro ao atualizar cache:", error.message);
+        if (error.response) {
+            console.error("Status do Erro:", error.response.status);
+        }
+        // Se falhar, tenta usar o cache antigo se existir
         if (memoryCache.games) return { games: memoryCache.games, categories: memoryCache.categories };
-        throw error; // Se não tiver cache nenhum, joga o erro
+        throw error;
     }
 }
 
@@ -167,8 +163,9 @@ app.get('/api/categories', async (req, res) => {
 });
 
 app.get('/api/games', async (req, res) => {
+    console.log(`📥 Requisição recebida para /api/games (Página: ${req.query.page})`);
     try {
-        const data = await getCachedData(); // Pega do Cache Inteligente
+        const data = await getCachedData();
         const allGames = data.games;
 
         const page = parseInt(req.query.page) || 1;
@@ -181,7 +178,7 @@ app.get('/api/games', async (req, res) => {
 
         res.json({ page, totalPages, totalGames: allGames.length, games: paginatedGames });
     } catch (error) {
-        console.error(error);
+        console.error("Erro na rota /api/games:", error.message);
         res.status(502).json({ message: 'Serviço indisponível temporariamente.' });
     }
 });
@@ -191,7 +188,7 @@ app.get('/api/search', async (req, res) => {
         const q = req.query.q ? req.query.q.toLowerCase() : '';
         if (!q) return res.redirect('/api/games');
 
-        const data = await getCachedData(); // Pega do Cache Inteligente
+        const data = await getCachedData();
         const filteredGames = data.games.filter(game => game.title.toLowerCase().includes(q));
 
         const page = parseInt(req.query.page) || 1;
@@ -213,9 +210,7 @@ app.get('/api/search', async (req, res) => {
 app.get('/api/games/category/:id', async (req, res) => {
     try {
         const categoryId = parseInt(req.params.id, 10);
-        // Nota: A API externa de categoria (/games-cat/list) é rápida e leve, 
-        // mas para evitar bloqueio, vamos filtrar do nosso CACHE LOCAL GIGANTE se possível.
-        // Se preferir usar a API externa para garantir precisão:
+        // Usa a API externa para garantir precisão na categoria
         const response = await api.post('/games-cat/list', { cat: categoryId });
         const games = response.data;
 
@@ -234,7 +229,6 @@ app.get('/api/games/category/:id', async (req, res) => {
     }
 });
 
-// Detalhes, Recomendações e Auth (Mesmo código anterior)
 app.get('/api/game/:id', async (req, res) => {
     try {
         const gameId = parseInt(req.params.id, 10);
@@ -249,25 +243,20 @@ app.get('/api/game/:id', async (req, res) => {
 app.get('/api/game/:id/recommend', async (req, res) => {
     try {
         const gameId = parseInt(req.params.id, 10);
-        // Pega o título do cache se possível para economizar 1 request
         let gameTitle = '';
         if (memoryCache.games) {
             const cachedGame = memoryCache.games.find(g => g.id === gameId);
             if (cachedGame) gameTitle = cachedGame.title;
         }
-        
-        // Se não achou no cache, busca na API
         if (!gameTitle) {
              const info = await api.post('/gameinfo/get', { userId: 0, gameId: gameId });
              gameTitle = info.data.title;
         }
-
         const response = await api.post('/games/recommend', { game: gameId, title: gameTitle });
         res.json(response.data);
     } catch (error) { res.status(500).json({ message: 'Erro ao obter recomendações' }); }
 });
 
-// Rotas de Comentários (Manter as mesmas)
 app.get('/api/game/:id/comments', async (req, res) => {
     try {
         const comments = await Comment.find({ gameId: parseInt(req.params.id), isApproved: true }).sort({ timestamp: -1 });
@@ -280,7 +269,6 @@ app.post('/api/game/:id/comments', isLoggedIn, async (req, res) => {
         const { text } = req.body;
         if (!text || text.trim().length < 3) return res.status(400).json({ message: 'Muito curto' });
         
-        // Toxicidade
         if (process.env.PERSPECTIVE_API_KEY) {
             try {
                 const toxRes = await axios.post(`https://commentanalyzer.googleapis.com/v1alpha1/comments:analyze?key=${process.env.PERSPECTIVE_API_KEY}`, {
@@ -314,14 +302,13 @@ app.delete('/api/comments/:commentId', isLoggedIn, async (req, res) => {
     } catch (err) { res.status(500).json({ message: 'Erro' }); }
 });
 
-// Auth Routes
 app.get('/auth/google', passport.authenticate('google', { scope: ['profile', 'email'] }));
 app.get('/auth/google/callback', passport.authenticate('google', { failureRedirect: '/' }), (req, res) => res.redirect('/'));
 app.get('/auth/logout', (req, res, next) => { req.logout(err => { if (err) return next(err); res.redirect('/'); }); });
 app.get('/api/me', (req, res) => res.json(req.isAuthenticated() ? req.user : null));
+app.get('/ping', (req, res) => res.status(200).send('Pong'));
 
-// Frontend
 app.get('/game', (req, res) => res.sendFile(path.join(__dirname, 'public', 'game.html')));
 app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
 
-app.listen(PORT, () => console.log(`Servidor rodando na porta ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Servidor rodando na porta ${PORT}`));
