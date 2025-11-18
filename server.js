@@ -57,6 +57,16 @@ app.use(session({
 app.use(passport.initialize());
 app.use(passport.session());
 
+// ... (logo após app.use(passport.session()); )
+
+// --- Rota de Health Check (Para o Better Stack) ---
+app.get('/ping', (req, res) => {
+  res.status(200).send('Pong');
+});
+
+// ... (resto do código)
+
+
 // --- Passport Config ---
 if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
     passport.use(new GoogleStrategy({
