@@ -3,7 +3,7 @@ const express = require('express');
 const axios = require('axios');
 const cors = require('cors');
 const path = require('path');
-const fs = require('fs'); // Para ler os arquivos locais (Snapshot)
+const fs = require('fs');
 const mongoose = require('mongoose');
 const passport = require('passport');
 const GoogleStrategy = require('passport-google-oauth20').Strategy;
@@ -20,8 +20,6 @@ if (MONGO_URI) {
   mongoose.connect(MONGO_URI)
     .then(() => console.log('✅ Conectado ao MongoDB Atlas'))
     .catch(err => console.error('❌ Erro MongoDB:', err.message));
-} else {
-  console.warn("⚠️ MONGO_URI não definido. Login e Comentários não funcionarão.");
 }
 
 // --- Schemas ---
@@ -44,12 +42,23 @@ const CommentSchema = new mongoose.Schema({
 });
 const Comment = mongoose.model('Comment', CommentSchema);
 
+// (NOVO!) Schema de Avaliação
+const RatingSchema = new mongoose.Schema({
+  gameId: { type: Number, required: true, index: true },
+  userGoogleId: { type: String, required: true },
+  score: { type: Number, required: true, min: 1, max: 5 }
+});
+// Garante que um usuário só pode dar UMA nota por jogo
+RatingSchema.index({ gameId: 1, userGoogleId: 1 }, { unique: true });
+const Rating = mongoose.model('Rating', RatingSchema);
+
+
 // --- Middlewares ---
 app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 app.use(session({
-  secret: process.env.SESSION_SECRET || 'segredo_padrao',
+  secret: process.env.SESSION_SECRET || 'segredo',
   resave: false,
   saveUninitialized: false,
   store: MONGO_URI ? MongoStore.create({ mongoUrl: MONGO_URI }) : null,
@@ -86,231 +95,160 @@ if (process.env.GOOGLE_CLIENT_ID) {
         try { const user = await User.findById(id); done(null, user); } catch(err) { done(err); }
     });
 }
-
 function isLoggedIn(req, res, next) {
   if (req.isAuthenticated()) return next();
   res.status(401).json({ message: 'Login necessário.' });
 }
 
-// --- CARREGAMENTO DE DADOS LOCAIS (SNAPSHOT) ---
-// Isso contorna o bloqueio de IP da API externa para a lista principal
+// --- CARREGAMENTO DE DADOS LOCAIS ---
 let localGames = [];
 let localCategories = [];
+try {
+    const gamesPath = path.join(__dirname, 'data', 'games.json');
+    const catsPath = path.join(__dirname, 'data', 'categories.json');
+    if (fs.existsSync(gamesPath)) localGames = JSON.parse(fs.readFileSync(gamesPath, 'utf8'));
+    if (fs.existsSync(catsPath)) localCategories = JSON.parse(fs.readFileSync(catsPath, 'utf8'));
+} catch (e) { console.error(e); }
 
-function loadLocalData() {
-    try {
-        const gamesPath = path.join(__dirname, 'data', 'games.json');
-        const catsPath = path.join(__dirname, 'data', 'categories.json');
-        
-        if (fs.existsSync(gamesPath)) {
-            localGames = JSON.parse(fs.readFileSync(gamesPath, 'utf8'));
-            console.log(`📂 Dados locais carregados: ${localGames.length} jogos.`);
-        } else {
-            console.warn("⚠️ data/games.json não encontrado. O site ficará vazio até você rodar 'node scripts/update-db.js'");
-        }
+const api = axios.create({ baseURL: 'https://api.igamesbr.com', headers: { 'User-Agent': 'okhttp/4.10.0' }, timeout: 5000 });
 
-        if (fs.existsSync(catsPath)) {
-            localCategories = JSON.parse(fs.readFileSync(catsPath, 'utf8'));
-        }
-    } catch (error) {
-        console.error("❌ Erro ao ler dados locais:", error.message);
-    }
-}
-loadLocalData(); // Carrega ao iniciar
+// --- ROTAS DA API ---
 
-// Axios para chamadas individuais (Detalhes/Diagnóstico)
-const api = axios.create({
-  baseURL: 'https://api.igamesbr.com',
-  headers: {
-    'User-Agent': 'okhttp/4.10.0',
-    'Accept': 'application/json',
-    'Accept-Encoding': 'gzip'
-  },
-  timeout: 10000
-});
+app.get('/api/categories', (req, res) => res.json(localCategories));
 
-// ==================================================================
-// ROTAS DA API
-// ==================================================================
-
-// 1. ROTA DE DIAGNÓSTICO (Para testar se o Render está bloqueado)
-app.get('/api/diagnose', async (req, res) => {
-    try {
-        const start = Date.now();
-        // Tenta acessar uma rota leve da API externa
-        const response = await axios.get('https://api.igamesbr.com/categories/list', {
-            headers: {
-                'User-Agent': 'okhttp/4.10.0', // Mesmo user-agent do Android
-                'Accept': 'application/json, text/plain, */*',
-                'Accept-Encoding': 'gzip'
-            },
-            timeout: 10000,
-            validateStatus: () => true // Permite ver o erro 403/429 sem cair no catch
-        });
-        const duration = Date.now() - start;
-
-        res.json({
-            diagnostico: "Teste de Conexão Render -> API Externa",
-            status_code: response.status,
-            status_text: response.statusText,
-            tempo_resposta: `${duration}ms`,
-            bloqueado: response.status === 403 || response.status === 406 || response.status === 429,
-            headers_recebidos: response.headers,
-            dados_amostra: response.data ? "Recebido (OK)" : "Vazio"
-        });
-
-    } catch (error) {
-        res.status(500).json({
-            status: "ERRO FATAL",
-            mensagem: error.message,
-            codigo: error.code
-        });
-    }
-});
-
-// 2. Categorias (Lê do arquivo local para velocidade)
-app.get('/api/categories', (req, res) => {
-    res.json(localCategories);
-});
-
-// 3. Todos os Jogos (Lê do arquivo local + Paginação)
 app.get('/api/games', (req, res) => {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 24;
-    const startIndex = (page - 1) * limit;
-    
-    // Se não tiver dados locais, retorna vazio (não tenta API externa para evitar crash)
-    if (localGames.length === 0) {
-        return res.json({ page, totalPages: 0, totalGames: 0, games: [] });
-    }
-
-    const paginatedGames = localGames.slice(startIndex, startIndex + limit);
-    const totalPages = Math.ceil(localGames.length / limit);
-
-    res.json({ page, totalPages, totalGames: localGames.length, games: paginatedGames });
+    const start = (page - 1) * limit;
+    const paginated = localGames.slice(start, start + limit);
+    res.json({ page, totalPages: Math.ceil(localGames.length / limit), games: paginated });
 });
 
-// 4. Pesquisa (Filtra o arquivo local)
 app.get('/api/search', (req, res) => {
-    const q = req.query.q ? req.query.q.toLowerCase() : '';
+    const q = (req.query.q || '').toLowerCase();
     if (!q) return res.redirect('/api/games');
-
-    const filteredGames = localGames.filter(game => game.title.toLowerCase().includes(q));
-    
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 24;
-    const startIndex = (page - 1) * limit;
-
-    res.json({
-        page,
-        totalPages: Math.ceil(filteredGames.length / limit),
-        totalGames: filteredGames.length,
-        games: filteredGames.slice(startIndex, startIndex + limit)
-    });
+    const filtered = localGames.filter(g => g.title.toLowerCase().includes(q));
+    res.json({ page: 1, totalPages: 1, games: filtered.slice(0, 24) });
 });
 
-// 5. Jogos por Categoria (Híbrido: Tenta filtrar localmente primeiro)
 app.get('/api/games/category/:id', async (req, res) => {
-    // Como o JSON local "todososjogos.json" geralmente NÃO tem a lista de categorias dentro de cada jogo,
-    // precisamos tentar a API externa. Se ela falhar (bloqueio), retornamos erro.
+    // Fallback simples para categorias
     try {
-        const response = await api.post('/games-cat/list', { cat: parseInt(req.params.id) });
-        const games = response.data;
-
-        const page = parseInt(req.query.page) || 1;
-        const limit = parseInt(req.query.limit) || 24;
-        const startIndex = (page - 1) * limit;
-
-        res.json({
-            page,
-            totalPages: Math.ceil(games.length / limit),
-            totalGames: games.length,
-            games: games.slice(startIndex, startIndex + limit)
-        });
-    } catch (error) {
-        console.error("Erro categoria (API externa):", error.message);
-        // Fallback: Retorna vazio para não quebrar o site
-        res.json({ page: 1, totalPages: 0, totalGames: 0, games: [] });
-    }
+        const resp = await api.post('/games-cat/list', { cat: parseInt(req.params.id) });
+        res.json({ page: 1, totalPages: 1, games: resp.data });
+    } catch (e) { res.json({ games: [] }); }
 });
 
-// 6. Detalhes do Jogo (API externa - geralmente não bloqueia ID único)
 app.get('/api/game/:id', async (req, res) => {
     try {
         const response = await api.post('/gameinfo/get', { userId: 0, gameId: parseInt(req.params.id) });
         const game = response.data;
-        
-        // Link Premium
         if (req.isAuthenticated()) game.download_url = game.premium_url;
         delete game.premium_url;
-        
         res.json(game);
-    } catch (error) { res.status(500).json({ message: 'Erro ao obter detalhes' }); }
+    } catch (e) { res.status(500).json({ message: 'Erro' }); }
 });
 
-// 7. Recomendações
 app.get('/api/game/:id/recommend', async (req, res) => {
     try {
         const gameId = parseInt(req.params.id);
-        // Tenta pegar título do cache local
-        const localGame = localGames.find(g => g.id === gameId);
-        let gameTitle = localGame ? localGame.title : null;
-        
-        // Se não tiver local, busca na API
+        let gameTitle = localGames.find(g => g.id === gameId)?.title;
         if (!gameTitle) {
-             const info = await api.post('/gameinfo/get', { userId: 0, gameId: gameId });
+             const info = await api.post('/gameinfo/get', { userId: 0, gameId });
              gameTitle = info.data.title;
         }
-
         const response = await api.post('/games/recommend', { game: gameId, title: gameTitle });
         res.json(response.data);
-    } catch (error) { res.status(500).json({ message: 'Erro recomendações' }); }
+    } catch (e) { res.status(500).json({ message: 'Erro' }); }
 });
 
-// --- Comentários & Auth ---
+// --- Comentários ---
 app.get('/api/game/:id/comments', async (req, res) => {
     try {
         const comments = await Comment.find({ gameId: parseInt(req.params.id), isApproved: true }).sort({ timestamp: -1 });
         res.json(comments);
     } catch (err) { res.status(500).json({ message: 'Erro' }); }
 });
-
 app.post('/api/game/:id/comments', isLoggedIn, async (req, res) => {
     try {
         const { text } = req.body;
-        if (!text || text.trim().length < 3) return res.status(400).json({ message: 'Muito curto' });
-        
+        if (!text || text.trim().length < 3) return res.status(400).json({ message: 'Curto demais' });
         if (process.env.PERSPECTIVE_API_KEY) {
-            try {
+             try {
                 const url = `https://commentanalyzer.googleapis.com/v1alpha1/comments:analyze?key=${process.env.PERSPECTIVE_API_KEY}`;
-                const toxRes = await axios.post(url, { comment: { text }, languages: ["pt"], requestedAttributes: { TOXICITY: {} } });
-                if (toxRes.data.attributeScores.TOXICITY.summaryScore.value > 0.7) return res.status(400).json({ message: 'Bloqueado.' });
-            } catch (e) { console.error('Erro Perspective', e.message); }
+                const r = await axios.post(url, { comment: { text }, languages: ["pt"], requestedAttributes: { TOXICITY: {} } });
+                if (r.data.attributeScores.TOXICITY.summaryScore.value > 0.7) return res.status(400).json({ message: 'Bloqueado' });
+             } catch (e) {}
         }
-
-        const newComment = new Comment({
-            gameId: parseInt(req.params.id),
-            userGoogleId: req.user.googleId,
-            userName: req.user.displayName,
-            userPhoto: req.user.photo,
-            text
-        });
-        await newComment.save();
-        res.status(201).json(newComment);
-    } catch (err) { res.status(500).json({ message: 'Erro ao salvar' }); }
+        const c = new Comment({ gameId: parseInt(req.params.id), userGoogleId: req.user.googleId, userName: req.user.displayName, userPhoto: req.user.photo, text });
+        await c.save();
+        res.status(201).json(c);
+    } catch (err) { res.status(500).json({ message: 'Erro' }); }
 });
-
 app.delete('/api/comments/:commentId', isLoggedIn, async (req, res) => {
     try {
-        const comment = await Comment.findById(req.params.commentId);
-        if (!comment) return res.status(404).json({ message: 'Não encontrado' });
-        if (comment.userGoogleId !== req.user.googleId) return res.status(403).json({ message: 'Sem permissão' });
+        const c = await Comment.findById(req.params.commentId);
+        if (!c) return res.status(404).json({ message: 'Não encontrado' });
+        if (c.userGoogleId !== req.user.googleId) return res.status(403).json({ message: 'Sem permissão' });
         await Comment.findByIdAndDelete(req.params.commentId);
         res.json({ message: 'Deletado' });
     } catch (err) { res.status(500).json({ message: 'Erro' }); }
 });
 
-// Auth
+// --- SISTEMA DE AVALIAÇÃO (NOVO!) ---
+
+// 1. Pegar a média e a nota do usuário
+app.get('/api/game/:id/rating', async (req, res) => {
+    try {
+        const gameId = parseInt(req.params.id);
+        
+        // Calcula a média
+        const stats = await Rating.aggregate([
+            { $match: { gameId: gameId } },
+            { $group: { _id: null, average: { $avg: "$score" }, count: { $sum: 1 } } }
+        ]);
+        
+        let userRating = 0;
+        if (req.isAuthenticated()) {
+            const myRating = await Rating.findOne({ gameId: gameId, userGoogleId: req.user.googleId });
+            if (myRating) userRating = myRating.score;
+        }
+
+        res.json({
+            average: stats[0] ? Math.round(stats[0].average * 10) / 10 : 0, // Arredonda 1 casa decimal
+            count: stats[0] ? stats[0].count : 0,
+            userRating: userRating
+        });
+    } catch (err) {
+        res.status(500).json({ message: 'Erro ao buscar avaliações' });
+    }
+});
+
+// 2. Postar uma nota
+app.post('/api/game/:id/rating', isLoggedIn, async (req, res) => {
+    try {
+        const gameId = parseInt(req.params.id);
+        const { score } = req.body;
+        
+        if (!score || score < 1 || score > 5) {
+            return res.status(400).json({ message: 'Nota inválida (1-5)' });
+        }
+
+        // Upsert: Cria se não existe, atualiza se já existe
+        await Rating.findOneAndUpdate(
+            { gameId: gameId, userGoogleId: req.user.googleId },
+            { score: score },
+            { upsert: true, new: true }
+        );
+
+        res.json({ message: 'Avaliação salva!' });
+    } catch (err) {
+        res.status(500).json({ message: 'Erro ao salvar avaliação' });
+    }
+});
+
+
+// Auth Routes
 app.get('/auth/google', passport.authenticate('google', { scope: ['profile', 'email'] }));
 app.get('/auth/google/callback', passport.authenticate('google', { failureRedirect: '/' }), (req, res) => res.redirect('/'));
 app.get('/auth/logout', (req, res, next) => { req.logout(err => { if (err) return next(err); res.redirect('/'); }); });
