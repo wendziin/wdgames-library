@@ -3,7 +3,7 @@ name: Atualizar Jogos (3x ao Dia)
 on:
   schedule:
     # Roda às 00:00, 08:00 e 16:00 (Horário UTC)
-    - cron: '0 0,8,16 * * *'
+    - cron: '0 0 * * *'
   workflow_dispatch: # Permite rodar manualmente clicando no botão
 
 permissions:
